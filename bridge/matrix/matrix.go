@@ -149,35 +149,6 @@ func (b *Bmatrix) Connect() error {
 	b.Log.Infof("Token: %s", b.mc.AccessToken)
 	b.Log.Infof("Device ID: %s", b.mc.DeviceID)
 
-	accountStore := mautrix.NewAccountDataStore("org.example.mybot.synctoken", b.mc)
-	b.mc.Store = accountStore
-
-	initialFilter := mautrix.Filter{
-		Room: &mautrix.RoomFilter{
-			Timeline: &mautrix.FilterPart{
-				Limit: 0, // Request zero history messages
-			},
-		},
-	}
-
-	// Upload the filter using client.CreateFilter()
-	filterResponse, err := b.mc.CreateFilter(context.TODO(), &initialFilter)
-	if err != nil {
-		b.Log.Fatalf("Failed to create filter: %v", err)
-	}
-
-	filterID := filterResponse.FilterID
-
-	err = b.mc.Store.SaveFilterID(context.Background(), b.UserID, filterID)
-	if err != nil {
-		b.Log.Fatalf("Failed to save filter ID to store: %v", err)
-	}
-
-	err = b.mc.Store.SaveNextBatch(context.TODO(), b.UserID, "")
-	if err != nil {
-		b.Log.Fatalf("Failed to save initial sync token: %v", err)
-	}
-
 	go b.handlematrix()
 	return nil
 }
@@ -473,6 +444,35 @@ func (b *Bmatrix) handlematrix() {
 		err error
 	)
 
+	accountStore := mautrix.NewAccountDataStore("org.matrix.matterbridge.store", b.mc)
+	b.mc.Store = accountStore
+
+	initialFilter := mautrix.Filter{
+		Room: &mautrix.RoomFilter{
+			Timeline: &mautrix.FilterPart{
+				Limit: 0, // Request zero history messages
+			},
+		},
+	}
+
+	// Upload the filter using client.CreateFilter()
+	filterResponse, err := b.mc.CreateFilter(context.TODO(), &initialFilter)
+	if err != nil {
+		b.Log.Fatalf("Failed to create filter: %v", err)
+	}
+
+	filterID := filterResponse.FilterID
+
+	err = b.mc.Store.SaveFilterID(context.Background(), b.UserID, filterID)
+	if err != nil {
+		b.Log.Fatalf("Failed to save filter ID to store: %v", err)
+	}
+
+	err = b.mc.Store.SaveNextBatch(context.TODO(), b.UserID, "")
+	if err != nil {
+		b.Log.Fatalf("Failed to save initial sync token: %v", err)
+	}
+
 	if b.GetString("SessionFile") != "" &&
 		b.GetString("PickleKey") != "" {
 		// Use a robust key generation method in production (e.g. from environment variable or key management service)
@@ -486,7 +486,19 @@ func (b *Bmatrix) handlematrix() {
 		}
 	}
 
+	syncFilter := mautrix.Filter{
+		Room: &mautrix.RoomFilter{
+			Timeline: &mautrix.FilterPart{
+				Limit: 20,
+				NotTypes: []event.Type{
+					event.NewEventType(accountStore.EventType),
+				},
+			},
+		},
+	}
+
 	syncer := b.mc.Syncer.(*mautrix.DefaultSyncer) //nolint:forcetypeassert // We're only using DefaultSyncer
+	syncer.FilterJSON = &syncFilter
 
 	readyChan := make(chan bool)
 	var once sync.Once
