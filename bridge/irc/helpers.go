@@ -1,6 +1,11 @@
 package birc
 
 import (
+	"crypto/rand"
+	"fmt"
+	"strings"
+	"time"
+
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/encoding/korean"
@@ -28,5 +33,28 @@ func toUTF8(from string, input string) string {
 	}
 
 	res, _ := enc.NewDecoder().String(input)
+
 	return res
+}
+
+func escapeTagValue(tag string) string {
+	tag = strings.ReplaceAll(tag, `\`, `\\`)
+	tag = strings.ReplaceAll(tag, `;`, `\:`)
+	tag = strings.ReplaceAll(tag, ` `, `\s`)
+	tag = strings.ReplaceAll(tag, "\r", "")
+	tag = strings.ReplaceAll(tag, "\n", "")
+
+	return tag
+}
+
+func newMsgID() string { // Adding 4 random hex characters for safety
+	suffix := make([]byte, 2)
+
+	_, err := rand.Read(suffix)
+	if err != nil {
+		// Fallback to a simple counter or just the timestamp if entropy fails
+		return fmt.Sprintf("mbirc-%d-fb", time.Now().UnixNano())
+	}
+
+	return fmt.Sprintf("mbirc-%d%x", time.Now().UnixNano(), suffix)
 }
