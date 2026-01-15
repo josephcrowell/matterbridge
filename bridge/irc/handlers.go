@@ -66,6 +66,18 @@ func (b *Birc) handleFiles(msg *config.Message) bool {
 	return true
 }
 
+func (b *Birc) handleCap(client *girc.Client, event girc.Event) {
+	subCommand := event.Params[1] // ACK or NAK
+	capList := event.Last()       // The list of capabilities
+
+	switch subCommand {
+	case "ACK":
+		b.Log.Infof("IRC capabilities GRANTED: %s", capList)
+	case "NAK":
+		b.Log.Warnf("IRC capabilities REJECTED: %s", capList)
+	}
+}
+
 func (b *Birc) handleInvite(client *girc.Client, event girc.Event) {
 	if len(event.Params) != 2 {
 		return
@@ -117,7 +129,18 @@ func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 	b.Log.Debugf("handle %#v", event)
 }
 
-func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
+func (b *Birc) handleConnected(client *girc.Client, event girc.Event) {
+	// Check if we have support for message-tags so we can try msgid, +draft/display-name, +draft/reply, +draft/edit, +draft/client
+	// We also include draft/message-tags-0.2 for older/experimental servers (like Oragono/Ergo)
+	b.Log.Debug("Requesting message-tags capability")
+
+	err := client.Cmd.SendRaw("CAP REQ :message-tags draft/message-tags-0.2 echo-message")
+	if err != nil {
+		b.Log.Errorf("Failed to request capabilities: %v", err)
+	}
+}
+
+func (b *Birc) handleWelcome(client *girc.Client, event girc.Event) {
 	b.Log.Debug("Registering callbacks")
 	i := b.i
 	b.Nick = event.Params[0]
@@ -132,6 +155,7 @@ func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
 	i.Handlers.Clear("QUIT")
 	i.Handlers.Clear("KICK")
 	i.Handlers.Clear("INVITE")
+	i.Handlers.Clear("CAP")
 
 	i.Handlers.AddBg("PRIVMSG", b.handlePrivMsg)
 	i.Handlers.Add(girc.RPL_TOPICWHOTIME, b.handleTopicWhoTime)
@@ -141,6 +165,7 @@ func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
 	i.Handlers.AddBg("QUIT", b.handleJoinPart)
 	i.Handlers.AddBg("KICK", b.handleJoinPart)
 	i.Handlers.Add("INVITE", b.handleInvite)
+	i.Handlers.Add("CAP", b.handleCap)
 }
 
 func (b *Birc) handleNickServ() {
