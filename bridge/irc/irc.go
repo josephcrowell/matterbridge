@@ -254,22 +254,101 @@ func (b *Birc) doSend() {
 				b.i.Cmd.SendRawf("RELAYMSG %s %s :%s", msg.Channel, username, text) //nolint:errcheck
 			}
 		} else {
-			if b.GetBool("Colornicks") {
-				checksum := crc32.ChecksumIEEE([]byte(msg.Username))
-				colorCode := checksum%14 + 2 // quick fix - prevent white or black color codes
-				username = fmt.Sprintf("\x03%02d%s\x0F", colorCode, msg.Username)
-			}
-			switch msg.Event {
-			case config.EventUserAction:
-				b.i.Cmd.Action(msg.Channel, username+msg.Text)
-			case config.EventNoticeIRC:
-				b.Log.Debugf("Sending notice to channel %s", msg.Channel)
-				b.i.Cmd.Notice(msg.Channel, username+msg.Text)
-			default:
-				b.Log.Debugf("Sending to channel %s", msg.Channel)
-				b.i.Cmd.Message(msg.Channel, username+msg.Text)
+			canMessageTags := b.i.HasCapability("message-tags")
+
+			// If the server doesn't support message-tags, fall back.
+			if !canMessageTags {
+				if b.GetBool("Colornicks") {
+					checksum := crc32.ChecksumIEEE([]byte(msg.Username))
+					colorCode := checksum%14 + 2 // quick fix - prevent white or black color codes
+					username = fmt.Sprintf("\x03%02d%s\x0F", colorCode, msg.Username)
+				}
+
+				switch msg.Event {
+				case config.EventUserAction:
+					b.i.Cmd.Action(msg.Channel, username+msg.Text)
+				case config.EventNoticeIRC:
+					b.Log.Debugf("Sending notice to channel %s", msg.Channel)
+					b.i.Cmd.Notice(msg.Channel, username+msg.Text)
+				default:
+					b.Log.Debugf("Sending to channel %s", msg.Channel)
+					b.i.Cmd.Message(msg.Channel, username+msg.Text)
+				}
+			} else {
+				b.sendTaggedEvent(msg)
 			}
 		}
+	}
+}
+
+func (b *Birc) sendTaggedEvent(msg config.Message) {
+	var err error
+
+	var msgID string
+
+	canEchoMessage := b.i.HasCapability("echo-message")
+
+	// Assign the display name
+	tags := []string{
+		"+draft/display-name=" + escapeTagValue(msg.Username),
+	}
+
+	if msg.ID != "" {
+		// Edit message if we have an ID
+		tags = append(tags, "+draft/edit="+escapeTagValue(msg.ID))
+	} else {
+		// Otherwise give the message an id tag
+		msgID = newMsgID()
+		tags = append(tags, "msgid="+escapeTagValue(msgID))
+	}
+
+	// Reply to parent if message has a parent id
+	if msg.ParentValid() {
+		tags = append(tags, "+draft/reply="+escapeTagValue(msg.ParentID))
+	}
+
+	switch msg.Event {
+	case config.EventUserAction:
+		err = b.i.Cmd.SendRawf(
+			"@%s PRIVMSG %s :\001ACTION %s\001",
+			strings.Join(tags, ";"),
+			msg.Channel,
+			msg.Text,
+		)
+	case config.EventNoticeIRC:
+		b.Log.Debugf("Sending notice to channel %s", msg.Channel)
+		err = b.i.Cmd.SendRawf(
+			"@%s NOTICE %s :%s",
+			strings.Join(tags, ";"),
+			msg.Channel,
+			msg.Text,
+		)
+	default:
+		b.Log.Debugf("Sending to channel %s", msg.Channel)
+		err = b.i.Cmd.SendRawf(
+			"@%s PRIVMSG %s :%s",
+			strings.Join(tags, ";"),
+			msg.Channel,
+			msg.Text,
+		)
+	}
+
+	if err != nil {
+		b.Log.Errorf("sendTaggedMessage failed: %#v", err)
+	} else if !canEchoMessage && msgID != "" {
+		// If the server doesn't support echo-message,
+		// the gateway will never see the ID via handlePrivMsg.
+		// We must manually acknowledge it here.
+		b.Log.Debugf("Server does not support echo-message, performing local ID sync for: %s", msgID)
+		// We set the ID so the gateway can map it.
+		//
+		// Note: msg.ID is only for edits, but since this is a "echo_msg_map"
+		// event for a message WE sent, the gateway will use this to map the send,
+		// but since it's not a valid event id, it won't process the message back to the bridge.
+		msg.ID = msgID
+
+		msg.Event = "echo_msg_map"
+		b.Remote <- msg
 	}
 }
 
@@ -364,20 +443,26 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	if event.Command == "NOTICE" && len(event.Params) != 2 {
 		return true
 	}
+
 	// don't forward queries to the bot
 	if event.Params[0] == b.Nick {
 		return true
 	}
+
 	// don't forward message from ourself
-	if event.Source != nil {
-		if event.Source.Name == b.Nick {
+	if event.Source != nil && event.Source.Name == b.Nick {
+		// If it's from us, ONLY continue if it has a msgid we want to track
+		// Otherwise, skip it to prevent message loops.
+		if _, ok := event.Tags.Get("msgid"); !ok {
 			return true
 		}
 	}
+
 	// don't forward messages we sent via RELAYMSG
 	if relayedNick, ok := event.Tags.Get("draft/relaymsg"); ok && relayedNick == b.Nick {
 		return true
 	}
+
 	// This is the old name of the cap sent in spoofed messages; I've kept this in
 	// for compatibility reasons
 	if relayedNick, ok := event.Tags.Get("relaymsg"); ok && relayedNick == b.Nick {

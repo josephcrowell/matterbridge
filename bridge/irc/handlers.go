@@ -227,6 +227,43 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 		UserID:   event.Source.Ident + "@" + event.Source.Host,
 	}
 
+	// Handle Display Name
+	if displayname, ok := event.Tags.Get("draft/display-name"); ok {
+		rmsg.Username = displayname
+	}
+
+	// Handle Reply (Threading)
+	if replyID, ok := event.Tags.Get("draft/reply"); ok {
+		rmsg.ParentID = replyID
+	}
+
+	// Handle msgid and edits
+	if editID, ok := event.Tags.Get("draft/edit"); ok {
+		// This is an edit: set rmsg.ID to target and set event type
+		rmsg.ID = editID
+		rmsg.Text = event.Last()
+	}
+
+	// Handle Echo-Message logic
+	// If this is our own message echoing back, we don't want to bridge it
+	// to other platforms again, but we DO want the gateway to see the ID.
+	if event.Source.Name == b.Nick {
+		b.Log.Debugf("Echo-message received for synchronization. Source: %s", b.Nick)
+		// We set the ID so the gateway can map it.
+		//
+		// Note: rmsg.ID is only for edits, but since this is a "echo_msg_map"
+		// event for a message WE sent, the gateway will use this to map the send,
+		// but since it's not a valid event id, it won't process the message back to the bridge.
+		if msgID, ok := event.Tags.Get("msgid"); ok && rmsg.ID == "" {
+			rmsg.ID = msgID
+		}
+
+		rmsg.Event = "echo_msg_map"
+		b.Remote <- rmsg
+
+		return
+	}
+
 	b.Log.Debugf("== Receiving PRIVMSG: %s %s %#v", event.Source.Name, event.Last(), event)
 
 	// set action event
